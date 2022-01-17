@@ -49,6 +49,17 @@ np.seterr(all="raise")
 np.set_printoptions(linewidth=const.LINEWIDTH, threshold=16)
 np.set_printoptions(linewidth=1000, threshold=sys.maxsize)
 
+class ReiteratableWrapper(object):
+    def __init__(self, f):
+        self._f = f
+
+    def __iter__(self):
+        self._f_, self._f = itertools.tee(self._f)
+        return self._f_
+
+    def __len__(self):
+        self._f_, self._f = itertools.tee(self._f)
+        return len([k for k in self._f_])
 
 def get_integer_formula_and_factor(
     self, max_denominator: int = 10000, iupac_ordering: bool = False
@@ -779,13 +790,21 @@ class Substitutor:
 
         # Initial values
         aut = np.arange(len(self._symmops))
+        # aut is the list containing number of symop. of the root node.
 
         # Structure: auts, pattern (growing list)
-        in_stack.append([aut, []])
+        #in_stack.append([aut, []])
+        in_stack=ReiteratableWrapper(i for i in [[aut, []]]) # initialized generator
+
         ran = False
+        out_stack_init = True
+
         for orbit, sites in self.disorder_groups.items():
             ran = True
-            logging.info(f"Making pattern for {orbit}")
+            logging.info(f"Making pattern for = {orbit}")
+            logging.debug(f"an orbit = {orbit}")
+
+            index_init_flag=True
 
             # Reverse to minimize sub. amount.
             chain = list(rscum(self._disorder_amounts()[orbit][::-1]))
@@ -794,28 +813,53 @@ class Substitutor:
             # (But read the aut from patterns from the previous orbit)
             # x[1] is the pattern
             indices = np.arange(len(sites))
-            for x in in_stack:
-                x[1].append(indices)
 
+            # x[1] [1...24]. for the intialization. (for the root node)
             group_perms = self._group_perms[orbit]
             group_dmat = self._group_dmat[orbit]
 
-            # Intra-orbit chaining.
-            for amount in chain:
-                logging.info(f"Making pattern for {amount}/{chain}")
-                # Progress bar.
-                pbar = tqdm.tqdm(
-                    total=len(in_stack),
-                    desc="Progress",
-                    **const.TQDM_CONF,
-                    disable=const.DISABLE_PROGRESSBAR,
-                )
+            # Intra-orbit chaining. This is for one color one by one
+            # for example, when you want replace 24A with 9B and 1C,
+            # chain should be [10, 1] -> because first shry replaces
+            # 24 A with 10B', and then 10B' with 9B and 1C.
 
-                while in_stack:
-                    aut, pattern = in_stack.pop()
+            # Intra-orbit chaining.
+            print("=====chain loop starts=====")
+            print(f"chain={chain}")
+            for kk, amount in enumerate(chain):
+                print(f"chain loop={kk}, amount={amount}")
+                print("-----in_stack loop starts-----")
+                for i, (aut, pattern) in enumerate(in_stack):
+                    print(f"**in_stack loop = {i}")
+                    # if orbit,site changed
+                    if index_init_flag:
+                        pattern.append(indices)
+                    # here aut is a list of symmops.
+                    # aut's index=0: -> symop(permutation) = group_perms[0]
+                    # pattern =
+                    #logging.info("aut:")
+                    #logging.info(aut)
+                    #logging.info("pattern:")
+                    #logging.info(pattern)
+                    # pattern
+                    # [array([ 0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]), array([ 0,  3,  7, 10,  2,  5,  6,  9,  1,  4])]
+                    # the first array is the indices of the Wycoff site
+                    # the second array is the indices that are going to be replaced with this substitution.
                     # Operate on the _last_ subpattern, except for the first one
-                    subpattern = pattern[-1]
+                    subpattern = pattern[-1] # because shry takes the tail of the list, becuase the tail contains the information of the latest substitiion of the chain
+                    #print("subpattern:")
+                    #print(subpattern)
                     subperm = group_perms[np.ix_(aut, subpattern)]
+                    #print("subperm:")
+                    #print(subperm)
+                    # here, shry applies all the symop. correspinding aut[xx], and the applied all the symmetory ope. to subpatter.
+                    # therefore, the length of subperm should be consisntetn with len(aut)
+                    # this is 2D list
+                    # [
+                    #  [site indices ...]
+                    #  [site indices ...]
+                    # ]
+
                     # NOTE: (*a) If inconsistent, please disable this part
                     # reduced_subperm, inverse = np.unique(subperm, axis=0, return_inverse=True)
                     if not self._no_dmat:
@@ -841,19 +885,86 @@ class Substitutor:
                             t_kind=self._t_kind,
                         )
                         self._pattern_makers[label] = maker
+
+                    # R(X)
+                    # C(X) for R(X), X1, X2 ....
+                    # {X1, X2...}, {Y1, Y2 ...} {Z1, Z2, ....}
+                    # Aut_X,       Aut_Y,       Aut_Z
+                    # These maker.auts and maker.patterns are the main engines for canonical augmentation.
+                    # They search a tree up to "amount" and
+                    # return the automorphisms and substitution indices of the bottom nodes.
                     auts = maker.auts(amount)
                     patterns = maker.patterns(amount)
+                    # auts contain [Aut_X, Aut_Y, Aut_Z, ...]
+                    # patterns contain {X, Y, Z, ...}
+                    #print("auts:")
+                    #print(auts)
+                    #print("patterns:")
+                    #print(patterns)
+
+                    # aut also xxx
+                    # patterns contains all the information of the "latest" (the deepest tree of the "ONE COLOR" subsistution.).
+                    # All the middle patterns are disregarded.
+                    # So, the change we were talking about is trivial for one color substituion.
+
+                    """
+                    # what this loop exactly does?
                     for _aut, _subpattern in zip(auts, patterns):
+                        print(pattern)
+                        print(_subpattern)
+                        sys.exit()
                         _pattern = pattern + [_subpattern]
                         # NOTE: (*d) and here
                         # out_stack.append([aut[np.isin(inverse, _aut)], _pattern])
                         out_stack.append([aut[_aut], _pattern])
-                    pbar.update()
-                pbar.close()
-                in_stack, out_stack = out_stack, in_stack
+                    """
+
+                    # print("out_stack:")
+                    # print(([aut[_aut], pattern + [_subpattern]] for _aut, _subpattern in zip(auts, patterns)))
+                    # out_stack=ReiteratableWrapper(([aut[_aut], pattern + [_subpattern]] for _aut, _subpattern in zip(auts, patterns)))
+
+                    def out_stack_sum():
+                        old_out_stack_g=ReiteratableWrapper((i for i in out_stack))
+                        new_out_stack_g=ReiteratableWrapper(([aut[_aut], pattern + [_subpattern]] for _aut, _subpattern in zip(auts, patterns)))
+
+                        yield from old_out_stack_g
+                        yield from new_out_stack_g
+
+                    if out_stack_init:
+                        out_stack_init = False
+                        out_stack = ReiteratableWrapper(([aut[_aut], pattern + [_subpattern]] for _aut, _subpattern in zip(auts, patterns)))
+
+                        print("###check here### out_stack/init")
+                        print([ll for ll in ([aut[_aut], pattern + [_subpattern]] for _aut, _subpattern in zip(auts, patterns))])
+
+                    else:
+                        out_stack=ReiteratableWrapper(out_stack_sum())
+
+                        print("###check here### out_stack/sum")
+                        print([jk for jk in out_stack_sum()])
+
+                in_stack=out_stack
+                out_stack_init = True
+                index_init_flag = False
+
+                print("-----in_stack loop end-----")
+                print("")
+
+            print("=====chain loop end=====")
+            print("")
+                #sys.exit()
+
+        #sys.exit()
+
         if ran:
-            self._auts = [x[0] for x in in_stack]
-            self._patterns = [x[1] for x in in_stack]
+            self._auts = ReiteratableWrapper((x[0] for x in in_stack))
+            self._patterns = ReiteratableWrapper((x[1] for x in in_stack))
+
+            print("self._auts")
+            print(self._auts)
+            print("self._patterns")
+            print(self._patterns)
+
             n_generated = len(in_stack)
             n_expected = self.count()
             if n_generated != n_expected:
@@ -882,8 +993,12 @@ class Substitutor:
         letters = [chr(97 + i) for i in range(n_segments)]
 
         configs = []
+        """
         for i in self.sampled_indices:
             sentence = self._ll2il(das, self._patterns[i], letters)
+        """
+        for patterns in self._patterns:
+            sentence = self._ll2il(das, patterns, letters)
             configs.append("".join(sentence))
         return configs
 
@@ -903,6 +1018,8 @@ class Substitutor:
         =
         [b, a, b, c, d]  # il
         """
+        #print("pattern:")
+        #print(pattern)
         si = iter(symbols_list)
         pi = iter(pattern)
         il = []
@@ -931,8 +1048,13 @@ class Substitutor:
         logging.info("\nObtaining pattern weights.")
         space_group_size = len(self._symmops)
         weights = []
+
+        """
         for i in self.sampled_indices:
             weights.append(space_group_size // self._auts[i].size)
+        return weights
+        """
+        weights = [space_group_size // aut.size for aut in self._auts]
         return weights
 
     @functools.lru_cache()
@@ -968,8 +1090,14 @@ class Substitutor:
         """
         logging.info("\nCreating CifWriter instances.")
         template_structure = self._structure.copy()
+
+        #print(self.sampled_indices[0])
+
         try:
-            template_pattern = self._patterns[self.sampled_indices[0]]
+            #template_pattern = self._patterns[self.sampled_indices[0]]
+            for patterns in self._patterns:
+                template_pattern = patterns
+                break
         except IndexError:
             raise RuntimeError("Patterns have not been generated.")
 
@@ -1004,11 +1132,13 @@ class Substitutor:
             block["_atom_site_symmetry_multiplicity"] = ["1"] * len(template_label)
             block["_atom_site_occupancy"] = ["1.0"] * len(template_label)
 
-            for i in self.sampled_indices:
+            #for i in self.sampled_indices:
+            for patterns in self._patterns:
                 type_symbol = template_type_symbol.copy()
                 label = template_label.copy()
 
-                pi = iter(self._patterns[i])
+                #pi = iter(self._patterns[i])
+                pi = iter(patterns)
                 for orbit in orbits:
                     indices = gis[orbit]
                     de = des[orbit]
@@ -1036,10 +1166,12 @@ class Substitutor:
             ]
             template_zs = [cell_specie.index(x.species) for x in template_structure]
 
-            for i in self.sampled_indices:
+            #for i in self.sampled_indices:
+            for patterns in self._patterns:
                 zs = template_zs.copy()
 
-                pi = iter(self._patterns[i])
+                #pi = iter(self._patterns[i])
+                pi = iter(patterns)
                 zi = iter(z_map)
                 for orbit in orbits:
                     indices = gis[orbit]
@@ -1330,8 +1462,11 @@ class PatternMaker:
                 self._relabel_index[np.setdiff1d(inverter, pattern)]
                 for pattern in self._patterns[_n]
             ]
-        return (self._relabel_index[pattern] for pattern in self._patterns[_n])
 
+        #return (self._relabel_index[pattern] for pattern in self._patterns[_n])
+        return ReiteratableWrapper((self._relabel_index[pattern] for pattern in self._patterns[_n]))
+
+    # makers.auts
     def auts(self, n):
         """
         Get the automorphisms in terms of input permutation
@@ -1346,7 +1481,8 @@ class PatternMaker:
                 start = max(lessthan)
             self.search(start=start, stop=_n)
         # Map to original permutation; put identity on 0
-        auts = (np.sort(self._row_index[aut]) for aut in self._auts[_n])
+        #auts = (np.sort(self._row_index[aut]) for aut in self._auts[_n])
+        auts = ReiteratableWrapper((np.sort(self._row_index[aut]) for aut in self._auts[_n]))
         return auts
 
     def _fill_sieve(self, n):
@@ -1529,13 +1665,15 @@ class PatternMaker:
     def _get_mins_float(subobj_ts):
         return np.flatnonzero(np.isclose(subobj_ts, subobj_ts.min()))
 
+    # based on the canonical representation,
+    # shry finds
     def _invar_search(self, start=0, stop=None):
         """
         Combines invar and lexmax to determine canonical parent.
 
         Args:
-            start: Start seach at this depth.
-            stop: Stop search at this depth.
+            start: Start seach at this depth. (if start = 0, meaing the root node.)
+            stop: Stop search at this depth. (if stop = 3, meaning the third layer.)
         """
         # TODO: stop and there
         if stop is None:
